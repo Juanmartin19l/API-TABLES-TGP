@@ -86,7 +86,9 @@ def process_row_text(row_text: str) -> dict:
     if date_match:
         row_text = row_text[date_match.end() :].strip()
 
-    tokens = row_text.split("$")
+    # Split tokens by dollar sign or OCR-misread 'S' when it's followed by digits
+    # This handles cases where OCR read '$' as 'S' (e.g. 'S123.45')
+    tokens = re.split(r"\$|S(?=\s*\d)", row_text, flags=re.IGNORECASE)
 
     origin = None
     monto = None
@@ -106,6 +108,26 @@ def process_row_text(row_text: str) -> dict:
             if filtered_parts:
                 origin = " ".join(filtered_parts)
 
+        # If origin ends with a long contiguous sequence of digits (>=4 digits)
+        # it's likely the OCR glued the monto to the origen (e.g. 'juan 4541354533').
+        # Extract that trailing numeric sequence and treat it as the first monetary value.
+        leading_value = None
+        if origin:
+            m = re.search(r"([0-9\.,]+)\s*$", origin)
+            if m:
+                digits_only = re.sub(r"\D", "", m.group(1))
+                if len(digits_only) >= 4:
+                    numero_text = m.group(1)
+                    # strip the numeric tail from origin
+                    origin = origin[: m.start()].strip()
+                    # parse numeric text into value/is_negative
+                    parsed_val, parsed_neg = parse_value_from_token(numero_text)
+                    leading_value = {
+                        "value": parsed_val,
+                        "is_negative": parsed_neg,
+                        "token": numero_text,
+                    }
+
     values = []
     for i in range(1, len(tokens)):
         token = tokens[i]
@@ -115,6 +137,10 @@ def process_row_text(row_text: str) -> dict:
         values.append(
             {"value": value, "is_negative": is_negative, "token": token.strip()}
         )
+
+    # If we extracted a leading_value from the origin, insert it as the first monetary token
+    if leading_value:
+        values.insert(0, leading_value)
 
     if len(values) >= 1:
         monto = values[0]["value"]
